@@ -114,6 +114,16 @@ function App() {
   const [editingDelivery, setEditingDelivery] = useState(null);
   const [currentView, setCurrentView] = useState('dispatcher')
   const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [showDriverForm, setShowDriverForm] = useState(false)
+const [editingDriver, setEditingDriver] = useState(null)
+const [driverFormData, setDriverFormData] = useState({
+  name: '',
+  email: '',
+  phone: '',
+  licence: '',
+  status: 'Available',
+  image: null,
+})
 
 const [loginData, setLoginData] = useState({
   email: '',
@@ -155,12 +165,44 @@ const estimatedTime =
     : defaultDeliveries;
 
 });
-  const drivers = [
-  'John',
-  'Sarah',
-  'Michael',
-  'Emily',
-]
+ const [drivers, setDrivers] = useState([
+  {
+    id: 'D001',
+    name: 'John',
+    email: 'john@roadrunner.com',
+    phone: '0400000001',
+    licence: 'QLD123456',
+    status: 'Available',
+    image: null,
+  },
+  {
+    id: 'D002',
+    name: 'Sarah',
+    email: 'sarah@roadrunner.com',
+    phone: '0400000002',
+    licence: 'QLD234567',
+    status: 'Available',
+    image: null,
+  },
+  {
+    id: 'D003',
+    name: 'Michael',
+    email: 'michael@roadrunner.com',
+    phone: '0400000003',
+    licence: 'QLD345678',
+    status: 'Assigned',
+    image: null,
+  },
+  {
+    id: 'D004',
+    name: 'Emily',
+    email: 'emily@roadrunner.com',
+    phone: '0400000004',
+    licence: 'QLD456789',
+    status: 'Available',
+    image: null,
+  },
+])
 
   const [formData, setFormData] = useState({
     customer: '',
@@ -427,6 +469,65 @@ const trackDelivery = (event) => {
     setDeliveryLocation(null);
     setShowForm(false)
   }
+  const handleDriverSubmit = (event) => {
+  event.preventDefault()
+
+  if (editingDriver) {
+    setDrivers((previousDrivers) =>
+      previousDrivers.map((driver) =>
+        driver.id === editingDriver.id
+          ? {
+              ...driver,
+              ...driverFormData,
+              id: driver.id,
+            }
+          : driver
+      )
+    )
+
+    alert('Driver details updated successfully!')
+    setEditingDriver(null)
+  } else {
+    const nextNumber = drivers.length + 1
+
+    const newDriver = {
+      id: `D${String(nextNumber).padStart(3, '0')}`,
+      ...driverFormData,
+    }
+
+    setDrivers((previousDrivers) => [
+      ...previousDrivers,
+      newDriver,
+    ])
+
+    alert('Driver registered successfully!')
+  }
+
+  setDriverFormData({
+    name: '',
+    email: '',
+    phone: '',
+    licence: '',
+    status: 'Available',
+    image: null,
+  })
+
+  setShowDriverForm(false)
+}
+const handleEditDriver = (driver) => {
+  setEditingDriver(driver)
+
+  setDriverFormData({
+    name: driver.name,
+    email: driver.email,
+    phone: driver.phone,
+    licence: driver.licence,
+    status: driver.status,
+    image: driver.image,
+  })
+
+  setShowDriverForm(true)
+}
   if (!isLoggedIn) {
   return (
     <div className="login-page">
@@ -908,6 +1009,13 @@ const trackDelivery = (event) => {
       Logout
     </button>
 
+<button
+  className="create-btn"
+  onClick={() => setShowDriverForm(true)}
+>
+  + Register Driver
+</button>
+
     <button
       className="create-btn"
       onClick={() => setShowForm(true)}
@@ -916,7 +1024,176 @@ const trackDelivery = (event) => {
     </button>
   </div>
 </header>
+ {showDriverForm && (
+  <section className="job-form-section">
 
+    <div className="form-header">
+      <h2>Register New Driver</h2>
+
+      <button
+        className="close-btn"
+        onClick={() => setShowDriverForm(false)}
+      >
+        ×
+      </button>
+    </div>
+
+    <form onSubmit={handleDriverSubmit}>
+      <div className="form-grid">
+
+        <div className="form-group">
+          <label>Full Name</label>
+          <input
+            type="text"
+            value={driverFormData.name}
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                name: event.target.value,
+              })
+            }
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Email</label>
+          <input
+            type="email"
+            value={driverFormData.email}
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                email: event.target.value,
+              })
+            }
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Phone Number</label>
+          <input
+            type="tel"
+            value={driverFormData.phone}
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                phone: event.target.value,
+              })
+            }
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Licence Number</label>
+          <input
+            type="text"
+            value={driverFormData.licence}
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                licence: event.target.value,
+              })
+            }
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Driver Status</label>
+          <select
+            value={driverFormData.status}
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                status: event.target.value,
+              })
+            }
+          >
+            <option value="Available">Available</option>
+            <option value="Assigned">Assigned</option>
+            <option value="Off Duty">Off Duty</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Driver Profile Image</label>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) =>
+              setDriverFormData({
+                ...driverFormData,
+                image: event.target.files[0],
+              })
+            }
+          />
+        </div>
+
+      </div>
+
+      <div className="form-actions">
+        <button
+          type="button"
+          className="cancel-btn"
+          onClick={() => setShowDriverForm(false)}
+        >
+          Cancel
+        </button>
+
+        <button
+          type="submit"
+          className="save-btn"
+        >
+          Register Driver
+        </button>
+      </div>
+
+    </form>
+
+  </section>
+)}
+<section className="deliveries-section">
+  <h2>Driver Management</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Driver ID</th>
+        <th>Name</th>
+        <th>Email</th>
+        <th>Phone</th>
+        <th>Licence</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+
+    <tbody>
+      {drivers.map((driver) => (
+        <tr key={driver.id}>
+          <td>{driver.id}</td>
+          <td>{driver.name}</td>
+          <td>{driver.email}</td>
+          <td>{driver.phone}</td>
+          <td>{driver.licence}</td>
+          <td>{driver.status}</td>
+
+          <td>
+            <button
+              className="edit-btn"
+              onClick={() => handleEditDriver(driver)}
+            >
+              Edit
+            </button>
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+</section>
         {showForm && (
           <section className="job-form-section">
             <div className="form-header">
@@ -1267,11 +1544,11 @@ const trackDelivery = (event) => {
   >
     <option value="">Unassigned</option>
 
-    {drivers.map((driver) => (
-      <option key={driver} value={driver}>
-        {driver}
-      </option>
-    ))}
+   {drivers.map((driver) => (
+  <option key={driver.id} value={driver.name}>
+    {driver.name}
+  </option>
+))}cd
   </select>
 </td>
                   <td>
