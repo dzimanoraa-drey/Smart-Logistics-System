@@ -116,6 +116,8 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [showDriverForm, setShowDriverForm] = useState(false)
 const [editingDriver, setEditingDriver] = useState(null)
+const [driverSearch, setDriverSearch] = useState('')
+const [selectedDriver, setSelectedDriver] = useState(null)
 const [driverFormData, setDriverFormData] = useState({
   name: '',
   email: '',
@@ -1121,15 +1123,19 @@ const handleEditDriver = (driver) => {
         <div className="form-group">
           <label>Driver Profile Image</label>
           <input
-            type="file"
-            accept="image/*"
-            onChange={(event) =>
-              setDriverFormData({
-                ...driverFormData,
-                image: event.target.files[0],
-              })
-            }
-          />
+  type="file"
+  accept="image/*"
+  onChange={(event) => {
+    const file = event.target.files[0]
+
+    if (file) {
+      setDriverFormData({
+        ...driverFormData,
+        image: URL.createObjectURL(file),
+      })
+    }
+  }}
+/>
         </div>
 
       </div>
@@ -1157,6 +1163,13 @@ const handleEditDriver = (driver) => {
 )}
 <section className="deliveries-section">
   <h2>Driver Management</h2>
+  <input
+  type="text"
+  placeholder="Search drivers by name, ID, email or licence..."
+  value={driverSearch}
+  onChange={(event) => setDriverSearch(event.target.value)}
+  className="driver-search"
+/>
 
   <table>
     <thead>
@@ -1172,7 +1185,18 @@ const handleEditDriver = (driver) => {
     </thead>
 
     <tbody>
-      {drivers.map((driver) => (
+      {drivers
+  .filter((driver) => {
+    const search = driverSearch.toLowerCase()
+
+    return (
+      driver.name.toLowerCase().includes(search) ||
+      driver.id.toLowerCase().includes(search) ||
+      driver.email.toLowerCase().includes(search) ||
+      driver.licence.toLowerCase().includes(search)
+    )
+  })
+  .map((driver) => (
         <tr key={driver.id}>
           <td>{driver.id}</td>
           <td>{driver.name}</td>
@@ -1183,17 +1207,112 @@ const handleEditDriver = (driver) => {
 
           <td>
             <button
+  className="view-btn"
+  onClick={() => setSelectedDriver(driver)}
+>
+  View Profile
+</button>
+            <button
               className="edit-btn"
               onClick={() => handleEditDriver(driver)}
             >
               Edit
             </button>
+            <button
+  className="delete-btn"
+  onClick={() => {
+    if (window.confirm(`Delete ${driver.name}?`)) {
+      setDrivers((previousDrivers) =>
+        previousDrivers.filter(
+          (item) => item.id !== driver.id
+        )
+      )
+    }
+  }}
+>
+  Delete
+</button> 
           </td>
         </tr>
       ))}
     </tbody>
   </table>
 </section>
+{selectedDriver && (
+  <div className="details-overlay">
+    <div className="delivery-details">
+
+      <div className="details-header">
+        <div>
+          <h2>Driver Profile</h2>
+          <p>{selectedDriver.id}</p>
+        </div>
+
+        <button
+          className="close-btn"
+          onClick={() => setSelectedDriver(null)}
+        >
+          ×
+        </button>
+      </div>
+{selectedDriver.image && (
+  <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+    <img
+      src={selectedDriver.image}
+      alt={`${selectedDriver.name} profile`}
+      style={{
+        width: '120px',
+        height: '120px',
+        borderRadius: '50%',
+        objectFit: 'cover'
+      }}
+    />
+  </div>
+)}
+      <div className="details-grid">
+        <div>
+          <span>Name</span>
+          <strong>{selectedDriver.name}</strong>
+        </div>
+
+        <div>
+          <span>Email</span>
+          <strong>{selectedDriver.email}</strong>
+        </div>
+
+        <div>
+          <span>Phone</span>
+          <strong>{selectedDriver.phone}</strong>
+        </div>
+
+        <div>
+          <span>Licence</span>
+          <strong>{selectedDriver.licence}</strong>
+        </div>
+
+        <div>
+          <span>Status</span>
+          <strong>{selectedDriver.status}</strong>
+        </div>
+
+        <div>
+          <span>Driver ID</span>
+          <strong>{selectedDriver.id}</strong>
+        </div>
+      </div>
+
+      <div className="details-actions">
+        <button
+          className="close-details-btn"
+          onClick={() => setSelectedDriver(null)}
+        >
+          Close
+        </button>
+      </div>
+
+    </div>
+  </div>
+)}
         {showForm && (
           <section className="job-form-section">
             <div className="form-header">
