@@ -205,7 +205,16 @@ const estimatedTime =
     image: null,
   },
 ])
-
+useEffect(() => {
+  fetch('https://smart-logistics-system-a1on.onrender.com/api/drivers')
+    .then((response) => response.json())
+    .then((data) => {
+      setDrivers(data)
+    })
+    .catch((error) => {
+      console.error('Error loading drivers:', error)
+    })
+}, [])
   const [formData, setFormData] = useState({
     customer: '',
     pickupAddress: '',
@@ -475,34 +484,51 @@ const trackDelivery = (event) => {
   event.preventDefault()
 
   if (editingDriver) {
-    setDrivers((previousDrivers) =>
-      previousDrivers.map((driver) =>
-        driver.id === editingDriver.id
-          ? {
-              ...driver,
-              ...driverFormData,
-              id: driver.id,
-            }
-          : driver
+  fetch(`https://smart-logistics-system-a1on.onrender.com/api/drivers/${editingDriver._id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(driverFormData),
+  })
+    .then((response) => response.json())
+    .then((updatedDriver) => {
+      setDrivers((previousDrivers) =>
+        previousDrivers.map((driver) =>
+          driver._id === updatedDriver._id
+            ? updatedDriver
+            : driver
+        )
       )
-    )
 
-    alert('Driver details updated successfully!')
-    setEditingDriver(null)
+      alert('Driver details updated successfully!')
+      setEditingDriver(null)
+    })
+    .catch((error) => {
+      console.error('Error updating driver:', error)
+      alert('Failed to update driver')
+    })
   } else {
-    const nextNumber = drivers.length + 1
-
-    const newDriver = {
-      id: `D${String(nextNumber).padStart(3, '0')}`,
-      ...driverFormData,
-    }
-
+    fetch('https://smart-logistics-system-a1on.onrender.com/api/drivers', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(driverFormData),
+})
+  .then((response) => response.json())
+  .then((savedDriver) => {
     setDrivers((previousDrivers) => [
       ...previousDrivers,
-      newDriver,
+      savedDriver,
     ])
 
     alert('Driver registered successfully!')
+  })
+  .catch((error) => {
+    console.error('Error saving driver:', error)
+    alert('Failed to register driver')
+  })
   }
 
   setDriverFormData({
@@ -1221,14 +1247,24 @@ const handleEditDriver = (driver) => {
             <button
   className="delete-btn"
   onClick={() => {
-    if (window.confirm(`Delete ${driver.name}?`)) {
-      setDrivers((previousDrivers) =>
-        previousDrivers.filter(
-          (item) => item.id !== driver.id
+  if (window.confirm(`Delete ${driver.name}?`)) {
+    fetch(`https://smart-logistics-system-a1on.onrender.com/api/drivers/${driver._id}`, {
+      method: 'DELETE',
+    })
+      .then((response) => response.json())
+      .then(() => {
+        setDrivers((previousDrivers) =>
+          previousDrivers.filter(
+            (item) => item._id !== driver._id
+          )
         )
-      )
-    }
-  }}
+      })
+      .catch((error) => {
+        console.error('Error deleting driver:', error)
+        alert('Failed to delete driver')
+      })
+  }
+}}
 >
   Delete
 </button> 
