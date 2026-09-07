@@ -1703,7 +1703,7 @@ const handleEditDriver = (driver) => {
   <option key={driver.id} value={driver.name}>
     {driver.name}
   </option>
-))}cd
+))}
   </select>
 </td>
                   <td>
