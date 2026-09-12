@@ -1,4 +1,2 @@
 'use strict';
-var parent = require('../stable/queue-microtask');
-
-module.exports = parent;
+module.exports = require('../full/queue-microtask');

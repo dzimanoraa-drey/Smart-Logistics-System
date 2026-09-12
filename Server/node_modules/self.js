@@ -1,4 +1,2 @@
 'use strict';
-var parent = require('../stable/self');
-
-module.exports = parent;
+module.exports = require('../full/self');
