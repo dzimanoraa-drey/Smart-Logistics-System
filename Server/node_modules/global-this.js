@@ -1,4 +1,4 @@
 'use strict';
-var parent = require('../stable/global-this');
+require('../modules/es.global-this');
 
-module.exports = parent;
+module.exports = require('../internals/global-this');
