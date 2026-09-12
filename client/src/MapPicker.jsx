@@ -1,115 +1,73 @@
-import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  useMapEvents,
-} from "react-leaflet";
-
+import { useEffect, useRef } from "react";
+import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+import { WAREHOUSE_ADDRESS, WAREHOUSE_LOCATION } from "./constants";
 
-const pickupIcon = new L.Icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png",
-  shadowUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-const deliveryIcon = new L.Icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
-  shadowUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
+async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+    const data = await res.json();
+    return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  } catch (err) {
+    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  }
+}
 
-function MapClickHandler({
-  active,
-  setPickupLocation,
-  setDeliveryLocation,
-  setPickupAddress,
-  setDeliveryAddress,
-}) {
+function ClickHandler({ setDeliveryLocation, setDeliveryAddress }) {
   useMapEvents({
     async click(e) {
-      const location = [e.latlng.lat, e.latlng.lng];
-
-      try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${location[0]}&lon=${location[1]}`
-        );
-
-        const data = await response.json();
-        const address = data.display_name || "Selected map location";
-
-        if (active === "pickup") {
-          setPickupLocation(location);
-          setPickupAddress(address);
-        } else {
-          setDeliveryLocation(location);
-          setDeliveryAddress(address);
-        }
-      } catch (error) {
-        console.error("Reverse geocoding failed:", error);
-
-        if (active === "pickup") {
-          setPickupLocation(location);
-        } else {
-          setDeliveryLocation(location);
-        }
-      }
+      const { lat, lng } = e.latlng;
+      const address = await reverseGeocode(lat, lng);
+      setDeliveryLocation([lat, lng]);
+      setDeliveryAddress(address);
     },
   });
-
   return null;
 }
 
-function MapPicker({
-  active,
-  pickupLocation,
-  deliveryLocation,
-  setPickupLocation,
-  setDeliveryLocation,
-  setPickupAddress,
-  setDeliveryAddress,
-}) {
-  const defaultPosition = [-27.4698, 153.0251];
-
-  return (
-    <MapContainer
-      center={pickupLocation || deliveryLocation || defaultPosition}
-      zoom={11}
-      style={{
-        height: "350px",
-        width: "100%",
-        borderRadius: "12px",
-      }}
-    >
-      <TileLayer
-        attribution="&copy; OpenStreetMap contributors"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-
-      <MapClickHandler
-        active={active}
-        setPickupLocation={setPickupLocation}
-        setDeliveryLocation={setDeliveryLocation}
-        setPickupAddress={setPickupAddress}
-        setDeliveryAddress={setDeliveryAddress}
-      />
-
-      {pickupLocation && (
-        <Marker position={pickupLocation} icon={pickupIcon} />
-      )}
-
-      {deliveryLocation && (
-        <Marker position={deliveryLocation} icon={deliveryIcon} />
-      )}
-    </MapContainer>
-  );
+function SizeFix() {
+  const map = useMap();
+  useEffect(() => {
+    const timer = setTimeout(() => map.invalidateSize(), 150);
+    return () => clearTimeout(timer);
+  }, [map]);
+  return null;
 }
 
-export default MapPicker;
+export default function MapPicker({ deliveryLocation, setDeliveryLocation, setDeliveryAddress }) {
+  const instanceId = useRef(Math.random().toString(36).slice(2));
+
+  return (
+    <div>
+      <p style={{ fontSize: "12.5px", color: "#6b7280", margin: "0 0 8px" }}>
+        The warehouse is fixed as the pickup point: <strong>{WAREHOUSE_ADDRESS}</strong>.
+        Click the map to set or change the delivery location.
+      </p>
+      <MapContainer
+        key={instanceId.current}
+        center={deliveryLocation || WAREHOUSE_LOCATION}
+        zoom={12}
+        style={{ height: "300px", width: "100%", borderRadius: "10px" }}
+      >
+        <TileLayer
+          attribution="&copy; OpenStreetMap contributors"
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        <SizeFix />
+        <ClickHandler
+          setDeliveryLocation={setDeliveryLocation}
+          setDeliveryAddress={setDeliveryAddress}
+        />
+        <Marker position={WAREHOUSE_LOCATION} />
+        {deliveryLocation && <Marker position={deliveryLocation} />}
+      </MapContainer>
+    </div>
+  );
+}

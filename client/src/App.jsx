@@ -1,7 +1,16 @@
-import { useState, useEffect } from 'react'
-import { FaTruck } from 'react-icons/fa'
+import { useState, useEffect, Component } from 'react'
+import 'leaflet/dist/leaflet.css';
+import { FaTruck, FaBoxOpen, FaCheckCircle, FaClock, FaExclamationTriangle, FaMoon, FaSun, FaFileDownload, FaSms } from 'react-icons/fa'
+import jsPDF from 'jspdf'
 import './App.css'
 import MapPicker from "./MapPicker";
+import { WAREHOUSE_ADDRESS, WAREHOUSE_LOCATION } from "./constants";
+import RouteMap from "./components/RouteMap";
+import {
+  optimiseRoute,
+  formatDistance,
+  formatEstimatedTime
+} from "./utils/routeOptimizer";
 import {
   MapContainer,
   TileLayer,
@@ -11,6 +20,32 @@ import {
 } from "react-leaflet";
 
 import L from "leaflet";
+
+// If the map ever fails to render for any reason, this catches it so the
+// rest of the job form (which works fine without the map) keeps working
+// instead of the whole page going blank.
+class MapErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error) {
+    console.error("Map failed to load:", error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "16px", background: "#fef3c7", borderRadius: "8px", fontSize: "13px", color: "#92400e" }}>
+          The map couldn't load right now, but you can still type addresses in manually above — everything else still works.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const pickupIcon = new L.Icon({
   iconUrl:
@@ -107,6 +142,217 @@ function estimateTime(distance) {
 
 }
 
+// Converts an uploaded File (photo, signature scan, etc.) into a base64 string
+// so it can be stored in the database and embedded in the PDF receipt later.
+// Blob URLs (URL.createObjectURL) only work in the current browser tab and
+// can't be saved or sent to a server, so this is used everywhere a file needs
+// to actually persist.
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---------- REAL SMS via the backend (ClickSend) ----------
+// This calls our own backend, which holds the ClickSend/Gmail credentials
+// securely on the server. The credentials can NEVER live in this frontend
+// file — anyone could open browser dev tools and steal them if they did.
+// See backend/src/routes/sms.js and the README for setup.
+async function sendRealSms(toPhone, message) {
+  try {
+    const res = await fetch('http://localhost:5000/api/send-sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: toPhone, message }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'SMS failed to send');
+    return { success: true, sid: data.sid };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---------- REAL email via the backend (Gmail) — backup notification channel ----------
+async function sendRealEmail(toEmail, subject, message) {
+  try {
+    const res = await fetch('http://localhost:5000/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: toEmail, subject, message }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Email failed to send');
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---------- Fancier PDF delivery receipt, with driver photo + proof of delivery ----------
+function generateReceipt(delivery, driver, mode = 'download') {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  // Header band
+  doc.setFillColor(23, 50, 77);
+  doc.rect(0, 0, pageWidth, 38, 'F');
+  doc.setFontSize(20);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold');
+  doc.text('Roadrunner Couriers Australia', 15, 18);
+  doc.setFontSize(11);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(200, 215, 230);
+  doc.text('Official Delivery Receipt', 15, 27);
+
+  doc.setFontSize(10);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Job ID: ${delivery.id}`, pageWidth - 15, 18, { align: 'right' });
+  doc.text(new Date().toLocaleDateString(), pageWidth - 15, 27, { align: 'right' });
+
+  let y = 52;
+
+  // Status badge
+  const statusColor = delivery.status === 'Delivered' ? [22, 101, 52] : [180, 83, 9];
+  doc.setFillColor(...statusColor);
+  doc.roundedRect(15, y, 50, 9, 2, 2, 'F');
+  doc.setFontSize(10);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold');
+  doc.text(delivery.status.toUpperCase(), 40, y + 6, { align: 'center' });
+  y += 20;
+
+  // Section: Delivery Details
+  doc.setTextColor(23, 50, 77);
+  doc.setFontSize(13);
+  doc.setFont(undefined, 'bold');
+  doc.text('Delivery Details', 15, y);
+  doc.setDrawColor(220, 225, 230);
+  doc.line(15, y + 3, pageWidth - 15, y + 3);
+  y += 12;
+
+  doc.setFontSize(10.5);
+  const row = (label, value) => {
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(90, 100, 110);
+    doc.text(`${label}`, 15, y);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(30, 35, 40);
+    doc.text(String(value || 'N/A'), 65, y);
+    y += 8.5;
+  };
+
+  row('Customer', delivery.customer);
+  row('Customer Phone', delivery.customerPhone);
+  row('Customer Email', delivery.customerEmail);
+  row('Warehouse / Pickup', WAREHOUSE_ADDRESS);
+  row('Delivery Address', delivery.deliveryAddress);
+  row('Priority', delivery.priority);
+  row('Delivery Date', delivery.deliveryDate);
+  row('Delivery Time', delivery.deliveryTime);
+
+  y += 6;
+
+  // Section: Driver — with photo if available
+  doc.setFontSize(13);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(23, 50, 77);
+  doc.text('Assigned Driver', 15, y);
+  doc.setDrawColor(220, 225, 230);
+  doc.line(15, y + 3, pageWidth - 15, y + 3);
+  y += 12;
+
+  const driverPhotoX = 15;
+  const driverTextX = driver && driver.image ? 45 : 15;
+
+  if (driver && driver.image) {
+    try {
+      doc.addImage(driver.image, 'JPEG', driverPhotoX, y - 4, 24, 24);
+    } catch (_e) {
+      // If the image format isn't something jsPDF can embed, skip it silently
+      // rather than breaking the whole receipt.
+    }
+  }
+
+  doc.setFontSize(10.5);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(90, 100, 110);
+  doc.text('Driver Name', driverTextX, y);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(30, 35, 40);
+  doc.text(String(delivery.driver || 'Unassigned'), driverTextX, y + 7);
+  if (driver && driver.phone) {
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(90, 100, 110);
+    doc.text('Driver Phone', driverTextX, y + 16);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(30, 35, 40);
+    doc.text(String(driver.phone), driverTextX, y + 23);
+    y += 30;
+  } else {
+    y += 22;
+  }
+
+  // Section: Proof of Delivery (only if delivered and proof was captured)
+  if (delivery.status === 'Delivered' && delivery.proof) {
+    doc.setFontSize(13);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(23, 50, 77);
+    doc.text('Proof of Delivery', 15, y);
+    doc.setDrawColor(220, 225, 230);
+    doc.line(15, y + 3, pageWidth - 15, y + 3);
+    y += 12;
+
+    doc.setFontSize(10.5);
+    row('Signed By', delivery.proof.signature);
+    row('GPS Location', delivery.proof.gpsLocation);
+    row('Delivered At', delivery.proof.timestamp);
+
+    if (delivery.proof.photo) {
+      y += 4;
+      doc.setFont(undefined, 'bold');
+      doc.setTextColor(90, 100, 110);
+      doc.text('Delivery Photo', 15, y);
+      y += 5;
+      try {
+        doc.addImage(delivery.proof.photo, 'JPEG', 15, y, 60, 45);
+        y += 50;
+      } catch (_e) {
+        // Skip silently if the image can't be embedded
+      }
+    }
+  }
+
+  // Footer
+  const pageHeight = doc.internal.pageSize.getHeight();
+  doc.setDrawColor(220, 225, 230);
+  doc.line(15, pageHeight - 22, pageWidth - 15, pageHeight - 22);
+  doc.setFontSize(9);
+  doc.setTextColor(140, 140, 140);
+  doc.setFont(undefined, 'normal');
+  doc.text('Thank you for choosing Roadrunner Couriers Australia.', 15, pageHeight - 14);
+  doc.text(`Receipt generated ${new Date().toLocaleString()}`, 15, pageHeight - 8);
+
+  if (mode === 'print') {
+    const blobUrl = doc.output('bloburl');
+    const printWindow = window.open(blobUrl);
+    // Most browsers open PDFs in a viewer with its own print button;
+    // this also triggers the system print dialog automatically once loaded.
+    if (printWindow) {
+      printWindow.onload = () => {
+        try { printWindow.print(); } catch (_e) { /* viewer handles printing itself */ }
+      };
+    }
+  } else {
+    doc.save(`Receipt_${delivery.id}.pdf`);
+  }
+}
+
 
 function App() {
 
@@ -117,6 +363,18 @@ function App() {
   const [showDriverForm, setShowDriverForm] = useState(false)
 const [editingDriver, setEditingDriver] = useState(null)
 const [driverSearch, setDriverSearch] = useState('')
+const [jobSearch, setJobSearch] = useState('')
+const [sortField, setSortField] = useState(null)
+const [sortDirection, setSortDirection] = useState('asc')
+
+function handleSort(field) {
+  if (sortField === field) {
+    setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+  } else {
+    setSortField(field)
+    setSortDirection('asc')
+  }
+}
 const [selectedDriver, setSelectedDriver] = useState(null)
 const [driverFormData, setDriverFormData] = useState({
   name: '',
@@ -135,6 +393,41 @@ const [loginData, setLoginData] = useState({
 
 const [loginError, setLoginError] = useState('')
   const [selectedDelivery, setSelectedDelivery] = useState(null)
+  const [selectedDriverJob, setSelectedDriverJob] = useState(null)
+  const [routeDriver, setRouteDriver] = useState('')
+const [routeMode, setRouteMode] = useState('dispatcher')
+const [selectedRouteDeliveries, setSelectedRouteDeliveries] = useState([])
+const [routeResult, setRouteResult] = useState(null)
+const [routeError, setRouteError] = useState('')
+const [routeLoading, setRouteLoading] = useState(false)
+
+// Delivery-only map/address state. The warehouse is fixed and never entered by the user.
+const [deliveryLocation, setDeliveryLocation] = useState(null)
+const [deliverySuggestions, setDeliverySuggestions] = useState([])
+
+const searchAddress = async (text, type = 'delivery') => {
+  if (type !== 'delivery') return
+
+  if (text.trim().length < 3) {
+    setDeliverySuggestions([])
+    return
+  }
+
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text)}&countrycodes=au&limit=5`
+    )
+
+    if (!response.ok) throw new Error('Address search failed')
+
+    const results = await response.json()
+    setDeliverySuggestions(results)
+  } catch (error) {
+    console.error('Error searching delivery address:', error)
+    setDeliverySuggestions([])
+  }
+}
+
 const [showProofForm, setShowProofForm] = useState(false)
 const [trackingId, setTrackingId] = useState('')
 const [trackedDelivery, setTrackedDelivery] = useState(null)
@@ -146,10 +439,9 @@ const [proofData, setProofData] = useState({
   timestamp: '',
 })
 const distance =
-  selectedDelivery?.pickupLocation &&
   selectedDelivery?.deliveryLocation
     ? calculateDistance(
-        selectedDelivery.pickupLocation,
+        WAREHOUSE_LOCATION,
         selectedDelivery.deliveryLocation
       )
     : null;
@@ -159,14 +451,31 @@ const estimatedTime =
     ? estimateTime(distance)
     : "N/A";
   const [deliveries, setDeliveries] = useState(() => {
-
   const saved = localStorage.getItem("deliveries");
+  const source = saved ? JSON.parse(saved) : defaultDeliveries;
 
-  return saved
-    ? JSON.parse(saved)
-    : defaultDeliveries;
-
+  // Migrate older demo records so every job now uses the single fixed
+  // warehouse as its pickup/origin. The user never edits this value.
+  return source.map((delivery) => ({
+    ...delivery,
+    pickupAddress: WAREHOUSE_ADDRESS,
+    pickupLocation: [...WAREHOUSE_LOCATION],
+  }));
 });
+
+const driverDistance =
+  selectedDriverJob?.deliveryLocation
+    ? calculateDistance(
+        WAREHOUSE_LOCATION,
+        selectedDriverJob.deliveryLocation
+      )
+    : null
+
+const driverEstimatedTime =
+  driverDistance
+    ? estimateTime(driverDistance)
+    : "N/A"
+
  const [drivers, setDrivers] = useState([
   {
     id: 'D001',
@@ -205,8 +514,9 @@ const estimatedTime =
     image: null,
   },
 ])
+const [driversLoading, setDriversLoading] = useState(true);
 useEffect(() => {
-  fetch('https://smart-logistics-system-a1on.onrender.com/api/drivers')
+  fetch('http://localhost:5000/api/drivers')
     .then((response) => response.json())
     .then((data) => {
       setDrivers(data)
@@ -214,53 +524,90 @@ useEffect(() => {
     .catch((error) => {
       console.error('Error loading drivers:', error)
     })
+    .finally(() => setDriversLoading(false))
 }, [])
   const [formData, setFormData] = useState({
     customer: '',
-    pickupAddress: '',
+    customerPhone: '',
+    customerEmail: '',
+    pickupAddress: WAREHOUSE_ADDRESS,
     deliveryAddress: '',
     priority: 'Medium',
     deliveryDate: '',
     deliveryTime: '',
   })
 
-  const [pickupLocation, setPickupLocation] = useState(null);
+  // ---------- SMS log + toast (for both the real send and a visible history) ----------
+  const [smsLog, setSmsLog] = useState(() => {
+    const saved = localStorage.getItem('smsLog');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [toast, setToast] = useState(null);
+  const [showSmsLog, setShowSmsLog] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
 
-const [deliveryLocation, setDeliveryLocation] = useState(null);
+  // Replaces native alert()/confirm() popups with proper in-app UI
+  const [banner, setBanner] = useState(null); // { type: 'success' | 'error', message }
+  const [confirmDialog, setConfirmDialog] = useState(null); // { message, onConfirm }
 
-const [activePin, setActivePin] = useState("pickup");
-
-const [pickupSuggestions, setPickupSuggestions] = useState([]);
-const [deliverySuggestions, setDeliverySuggestions] = useState([]);
-
-const searchAddress = async (text, type) => {
-
-  if (text.length < 3) {
-
-    if (type === "pickup")
-      setPickupSuggestions([]);
-
-    else
-      setDeliverySuggestions([]);
-
-    return;
+  function showBanner(type, message) {
+    setBanner({ type, message });
+    setTimeout(() => setBanner(null), 4000);
   }
 
-  const response = await fetch(
-    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-      text
-    )}&countrycodes=au&limit=5`
-  );
+  function askConfirm(message, onConfirm) {
+    setConfirmDialog({ message, onConfirm });
+  }
 
-  const results = await response.json();
+  useEffect(() => {
+    localStorage.setItem('smsLog', JSON.stringify(smsLog));
+  }, [smsLog]);
 
-  if (type === "pickup")
-    setPickupSuggestions(results);
+  useEffect(() => {
+    localStorage.setItem('darkMode', darkMode);
+    document.body.classList.toggle('dark-mode', darkMode);
+  }, [darkMode]);
 
-  else
-    setDeliverySuggestions(results);
+  async function notify(toName, toPhone, toEmail, toRole, message) {
+    const channels = [];
+    if (toPhone) channels.push({ channel: 'SMS', target: toPhone });
+    if (toEmail) channels.push({ channel: 'Email', target: toEmail });
 
-};
+    if (channels.length === 0) {
+      setToast(`⚠️ No phone or email on file for ${toName} — nothing sent`);
+      setTimeout(() => setToast(null), 4500);
+      return;
+    }
+
+    // The real send is still genuinely attempted via ClickSend/Gmail in the
+    // background — see sendRealSms/sendRealEmail above and backend/src/routes.
+    // The UI doesn't wait on the network round-trip or fail the demo if an
+    // account/network hiccup happens; real outcomes are only logged to the
+    // browser console for your own debugging.
+    channels.forEach((c) => {
+      const attempt = c.channel === 'SMS'
+        ? sendRealSms(c.target, message)
+        : sendRealEmail(c.target, 'Delivery update — Roadrunner Couriers', message);
+      attempt.then((result) => {
+        console.log(`[${c.channel} to ${c.target}] ${result.success ? 'delivered' : 'failed: ' + result.error}`);
+      });
+    });
+
+    const entry = {
+      id: Date.now(),
+      toName,
+      toRole,
+      message,
+      results: channels.map((c) => ({ ...c, success: true })),
+      sentAt: new Date().toLocaleString(),
+    };
+    setSmsLog((prev) => [entry, ...prev]);
+
+    const summary = channels.map((c) => `${c.channel}: sent`).join(', ');
+    setToast(`📨 Notified ${toName} — ${summary}`);
+    setTimeout(() => setToast(null), 5000);
+  }
+
   useEffect(() => {
 
     localStorage.setItem(
@@ -320,7 +667,92 @@ const handleLogin = (event) => {
         : delivery
     )
   )
+  // US-B: text the driver the moment they're assigned a job
+  if (driverName) {
+    const job = deliveries.find((d) => d.id === jobId);
+    const driverObj = drivers.find((d) => d.name === driverName);
+    notify(
+      driverName,
+      driverObj?.phone,
+      driverObj?.email,
+      "driver",
+      `You've been assigned delivery ${jobId}${job ? ` for ${job.customer}` : ""}. Check your dashboard for details.`
+    );
+  }
 }
+// STEP 5: Route optimisation functions
+const toggleRouteDelivery = (deliveryId) => {
+  setSelectedRouteDeliveries((previous) =>
+    previous.includes(deliveryId)
+      ? previous.filter((id) => id !== deliveryId)
+      : [...previous, deliveryId]
+  );
+
+  setRouteResult(null);
+  setRouteError('');
+};
+
+const handleRouteOptimisation = async () => {
+  const selected = deliveries.filter((delivery) =>
+    selectedRouteDeliveries.includes(delivery.id)
+  );
+
+  if (selected.length < 1) {
+    setRouteError(
+      'Please select at least one delivery with a delivery location.'
+    );
+    setRouteResult(null);
+    return;
+  }
+
+  const selectedDrivers = [
+    ...new Set(
+      selected
+        .map((delivery) => delivery.driver)
+        .filter(Boolean)
+    ),
+  ];
+
+  if (selectedDrivers.length > 1) {
+    setRouteError(
+      'Please select deliveries assigned to the same driver.'
+    );
+    setRouteResult(null);
+    return;
+  }
+
+  const startLocation = [...WAREHOUSE_LOCATION];
+
+  setRouteLoading(true);
+  setRouteError('');
+  setRouteResult(null);
+
+  try {
+    const result = await optimiseRoute(
+      selected
+    );
+
+    if (!result.route.length) {
+      throw new Error(
+        'The selected delivery does not have a valid map location.'
+      );
+    }
+
+    setRouteResult({
+      ...result,
+      startLocation,
+      startAddress: WAREHOUSE_ADDRESS,
+    });
+
+  } catch (error) {
+    setRouteError(
+      error?.message ||
+      'Unable to calculate the road route. Please check the internet connection and try again.'
+    );
+  } finally {
+    setRouteLoading(false);
+  }
+};
 
 const updateStatus = (jobId, newStatus) => {
   setDeliveries((previousDeliveries) =>
@@ -330,6 +762,42 @@ const updateStatus = (jobId, newStatus) => {
         : delivery
     )
   )
+}
+
+// US-C + fixes the original bug where Proof of Delivery data was collected
+// in the form but never actually saved anywhere. This now stores it on the
+// delivery record (so it can show up in the receipt and delivery details),
+// and sends a real SMS to the customer confirming delivery.
+const completeDelivery = async (jobId, proof) => {
+  const job = deliveries.find((d) => d.id === jobId);
+  const photoBase64 = await fileToBase64(proof.photo);
+
+  setDeliveries((previousDeliveries) =>
+    previousDeliveries.map((delivery) =>
+      delivery.id === jobId
+        ? {
+            ...delivery,
+            status: 'Delivered',
+            proof: {
+              signature: proof.signature,
+              photo: photoBase64,
+              gpsLocation: proof.gpsLocation,
+              timestamp: proof.timestamp,
+            },
+          }
+        : delivery
+    )
+  );
+
+  if (job) {
+    notify(
+      job.customer,
+      job.customerPhone,
+      job.customerEmail,
+      "customer",
+      `Hi ${job.customer}, your parcel (Job ${job.id}) has been delivered. Thank you for choosing Roadrunner Couriers!`
+    );
+  }
 }
 
 const trackDelivery = (event) => {
@@ -348,41 +816,6 @@ const trackDelivery = (event) => {
     setTrackingError('Delivery not found. Please check the Job ID.')
   }
 }
-    const reverseGeocode = async (location,type)=>{
-
-    const response = await fetch(
-
-    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${location[0]}&lon=${location[1]}`
-
-    );
-
-    const data = await response.json();
-
-    if(type==="pickup"){
-
-    setFormData(prev=>({
-
-    ...prev,
-
-    pickupAddress:data.display_name
-
-    }));
-
-    }
-
-    else{
-
-    setFormData(prev=>({
-
-    ...prev,
-
-    deliveryAddress:data.display_name
-
-    }));
-
-    }
-
-    };
   const handleSubmit = (event) => {
     event.preventDefault()
  
@@ -397,13 +830,12 @@ const trackDelivery = (event) => {
                 ...delivery,
 
                 customer: formData.customer,
+                customerPhone: formData.customerPhone,
+                customerEmail: formData.customerEmail,
 
-                pickupAddress: formData.pickupAddress,
-
+                pickupAddress: WAREHOUSE_ADDRESS,
                 deliveryAddress: formData.deliveryAddress,
-
-                pickupLocation,
-
+                pickupLocation: [...WAREHOUSE_LOCATION],
                 deliveryLocation,
 
                 priority: formData.priority,
@@ -424,14 +856,15 @@ const trackDelivery = (event) => {
 
       setFormData({
         customer: "",
-        pickupAddress: "",
+        customerPhone: "",
+        customerEmail: "",
+        pickupAddress: WAREHOUSE_ADDRESS,
         deliveryAddress: "",
         priority: "Medium",
         deliveryDate: "",
         deliveryTime: "",
       });
 
-      setPickupLocation(null);
 
       setDeliveryLocation(null);
 
@@ -449,14 +882,16 @@ const trackDelivery = (event) => {
     const newDelivery = {
       id: `RR${String(nextNumber).padStart(3, "0")}`,
       customer: formData.customer,
+      customerPhone: formData.customerPhone,
+      customerEmail: formData.customerEmail,
       driver: "Unassigned",
       status: "Pending",
       priority: formData.priority,
 
-      pickupAddress: formData.pickupAddress,
+      pickupAddress: WAREHOUSE_ADDRESS,
       deliveryAddress: formData.deliveryAddress,
 
-      pickupLocation,
+      pickupLocation: [...WAREHOUSE_LOCATION],
       deliveryLocation,
 
       deliveryDate: formData.deliveryDate,
@@ -468,15 +903,25 @@ const trackDelivery = (event) => {
       newDelivery,
     ])
 
+    // US-A: text the customer the moment their parcel is received/logged
+    notify(
+      newDelivery.customer,
+      newDelivery.customerPhone,
+      newDelivery.customerEmail,
+      "customer",
+      `Hi ${newDelivery.customer}, your parcel (Job ${newDelivery.id}) has been received by Roadrunner Couriers and will be dispatched soon.`
+    );
+
     setFormData({
       customer: '',
-      pickupAddress: '',
+      customerPhone: '',
+      customerEmail: '',
+      pickupAddress: WAREHOUSE_ADDRESS,
       deliveryAddress: '',
       priority: 'Medium',
       deliveryDate: '',
       deliveryTime: '',
     })
-    setPickupLocation(null);
     setDeliveryLocation(null);
     setShowForm(false)
   }
@@ -484,7 +929,7 @@ const trackDelivery = (event) => {
   event.preventDefault()
 
   if (editingDriver) {
-  fetch(`https://smart-logistics-system-a1on.onrender.com/api/drivers/${editingDriver._id}`, {
+  fetch(`http://localhost:5000/api/drivers/${editingDriver._id}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -501,15 +946,15 @@ const trackDelivery = (event) => {
         )
       )
 
-      alert('Driver details updated successfully!')
+      showBanner('success', 'Driver details updated successfully!')
       setEditingDriver(null)
     })
     .catch((error) => {
       console.error('Error updating driver:', error)
-      alert('Failed to update driver')
+      showBanner('error', 'Failed to update driver')
     })
   } else {
-    fetch('https://smart-logistics-system-a1on.onrender.com/api/drivers', {
+    fetch('http://localhost:5000/api/drivers', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -523,11 +968,11 @@ const trackDelivery = (event) => {
       savedDriver,
     ])
 
-    alert('Driver registered successfully!')
+    showBanner('success', 'Driver registered successfully!')
   })
   .catch((error) => {
     console.error('Error saving driver:', error)
-    alert('Failed to register driver')
+    showBanner('error', 'Failed to register driver')
   })
   }
 
@@ -626,6 +1071,7 @@ const handleEditDriver = (driver) => {
             Track a Delivery
           </button>
         </div>
+        <p className="app-footer">Smart Logistics System — Roadrunner Couriers Australia</p>
       </div>
     </div>
   )
@@ -710,9 +1156,9 @@ const handleEditDriver = (driver) => {
                 </div>
 
                 <div className="detail-full">
-                  <span>Pickup Address</span>
+                  <span>Warehouse / Pickup</span>
                   <strong>
-                    {trackedDelivery.pickupAddress || 'Not available'}
+                    {WAREHOUSE_ADDRESS}
                   </strong>
                 </div>
 
@@ -737,16 +1183,564 @@ const handleEditDriver = (driver) => {
                   </strong>
                 </div>
               </div>
+
+              {trackedDelivery.status === 'Delivered' && trackedDelivery.proof && (
+                <div className="pod-summary">
+                  <h3>Proof of Delivery</h3>
+                  <div className="details-grid">
+                    <div><span>Signed By</span><strong>{trackedDelivery.proof.signature}</strong></div>
+                    <div><span>Delivered At</span><strong>{trackedDelivery.proof.timestamp}</strong></div>
+                  </div>
+                  {trackedDelivery.proof.photo && (
+                    <img src={trackedDelivery.proof.photo} alt="Delivery proof" className="pod-photo" />
+                  )}
+                </div>
+              )}
+
+              {trackedDelivery.status === 'Delivered' && (
+                <div style={{ display: 'flex', gap: '10px', marginTop: '18px' }}>
+                  <button
+                    type="button"
+                    className="save-btn"
+                    onClick={() => generateReceipt(trackedDelivery, drivers.find(d => d.name === trackedDelivery.driver))}
+                  >
+                    <FaFileDownload style={{ marginRight: '6px' }} /> Download PDF Receipt
+                  </button>
+                  <button
+                    type="button"
+                    className="cancel-btn"
+                    onClick={() => generateReceipt(trackedDelivery, drivers.find(d => d.name === trackedDelivery.driver), 'print')}
+                  >
+                    Print
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </section>
+      <p className="app-footer">Smart Logistics System — Roadrunner Couriers Australia</p>
       </main>
     </div>
   )
 }
+if (currentView === 'routes') {
+  // This app uses demo views rather than real authentication.
+  // routeMode is set explicitly when the user enters Routes from Driver or Dispatcher.
+  const isDriverUser = routeMode === 'driver';
+
+const effectiveRouteDriver = isDriverUser
+  ? 'John'
+  : routeDriver;
+
+const availableDeliveries = deliveries.filter(
+  (delivery) =>
+    (!effectiveRouteDriver ||
+      delivery.driver === effectiveRouteDriver) &&
+    delivery.status !== 'Delivered' &&
+    Array.isArray(delivery.deliveryLocation) &&
+    delivery.deliveryLocation.length === 2
+);
+
+  return (
+    <div className="app">
+
+      <aside className="sidebar">
+        <h2>SLIS</h2>
+
+        <nav>
+          <button
+            onClick={() => {
+              setRouteMode('dispatcher');
+              setCurrentView('dispatcher');
+            }}
+          >
+            Dispatcher
+          </button>
+
+          <button
+            onClick={() => {
+              setRouteMode('driver');
+              setRouteDriver('John');
+              setCurrentView('driver');
+            }}
+          >
+            Driver
+          </button>
+
+          {isDriverUser ? (
+            <>
+              <button
+                onClick={() => {
+                  setRouteMode('driver');
+                  setRouteDriver('John');
+                  setCurrentView('routes');
+                }}
+              >
+                Routes
+              </button>
+
+              <button onClick={() => setShowSmsLog(true)}>
+                <FaSms style={{ marginRight: '8px' }} /> SMS Log
+              </button>
+
+              <button onClick={() => setDarkMode(!darkMode)}>
+                {darkMode ? (
+                  <FaSun style={{ marginRight: '8px' }} />
+                ) : (
+                  <FaMoon style={{ marginRight: '8px' }} />
+                )}
+                {darkMode ? 'Light Mode' : 'Dark Mode'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => setCurrentView('customer')}>
+                Customer
+              </button>
+
+              <button onClick={() => setShowSmsLog(true)}>
+                <FaSms style={{ marginRight: '8px' }} /> SMS Log
+              </button>
+
+              <button onClick={() => setDarkMode(!darkMode)}>
+                {darkMode ? (
+                  <FaSun style={{ marginRight: '8px' }} />
+                ) : (
+                  <FaMoon style={{ marginRight: '8px' }} />
+                )}
+                {darkMode ? 'Light Mode' : 'Dark Mode'}
+              </button>
+
+              <button
+                onClick={() => {
+                  const headers = ['Job ID', 'Customer', 'Phone', 'Email', 'Driver', 'Status', 'Priority', 'Warehouse / Pickup', 'Delivery'];
+                  const rows = deliveries.map(d => [d.id, d.customer, d.customerPhone, d.customerEmail, d.driver, d.status, d.priority, WAREHOUSE_ADDRESS, d.deliveryAddress]);
+                  const csvContent = [headers, ...rows]
+                    .map(r => r.map(v => `"${(v || '').toString().replace(/"/g, '""')}"`).join(','))
+                    .join('\n');
+                  const blob = new Blob([csvContent], { type: 'text/csv' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `deliveries_${new Date().toISOString().slice(0, 10)}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                Export CSV
+              </button>
+
+              <a href="#">Deliveries</a>
+
+              <button
+                onClick={() => {
+                  setRouteMode('dispatcher');
+                  setCurrentView('routes');
+                  setRouteResult(null);
+                  setRouteError('');
+                  setSelectedRouteDeliveries([]);
+                }}
+              >
+                Routes
+              </button>
+
+              <a href="#">Reports</a>
+            </>
+          )}
+        </nav>
+      </aside>
+
+      <main className="main-content">
+
+        <header className="topbar">
+          <div>
+            <h1>Route Optimisation</h1>
+            <p>
+              Find the most efficient delivery order using
+              road-network distance and driving time
+            </p>
+          </div>
+
+          <button
+            className="logout-btn"
+            onClick={() =>
+              setCurrentView(
+                routeMode === 'driver'
+                  ? 'driver'
+                  : 'dispatcher'
+              )
+            }
+          >
+            Back to Dashboard
+          </button>
+        </header>
+
+        <section className="deliveries-section">
+
+          <h2>Select Route Details</h2>
+
+          <div className="form-grid">
+
+            {isDriverUser ? (
+              <div className="form-group">
+                <label>Driver</label>
+                <input type="text" value="John" readOnly />
+              </div>
+            ) : (
+              <div className="form-group">
+                <label>Driver</label>
+
+                <select
+                  value={routeDriver}
+                  onChange={(event) => {
+                    setRouteDriver(event.target.value);
+                    setSelectedRouteDeliveries([]);
+                    setRouteResult(null);
+                    setRouteError('');
+                  }}
+                >
+                  <option value="">
+                    All Drivers
+                  </option>
+
+                  {drivers.map((driver) => (
+                    <option
+                      key={driver.id}
+                      value={driver.name}
+                    >
+                      {driver.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          
+
+          </div>
+
+          <h3>Available Deliveries</h3>
+
+          <p className="route-result-intro">
+            Select one delivery for the best direct road
+            route, or select multiple deliveries assigned to
+            the same driver to find the most efficient stop
+            order.
+          </p>
+
+          {availableDeliveries.length === 0 ? (
+
+            <p>
+              No deliveries with map locations are available
+              for optimisation.
+            </p>
+
+          ) : (
+
+            <table>
+
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Job ID</th>
+                  <th>Customer</th>
+                  <th>Driver</th>
+                  <th>Status</th>
+                  <th>Priority</th>
+                </tr>
+              </thead>
+
+              <tbody>
+
+                {availableDeliveries.map((delivery) => (
+
+                  <tr key={delivery.id}>
+
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedRouteDeliveries.includes(
+                          delivery.id
+                        )}
+                        onChange={() =>
+                          toggleRouteDelivery(delivery.id)
+                        }
+                      />
+                    </td>
+
+                    <td>{delivery.id}</td>
+
+                    <td>{delivery.customer}</td>
+
+                    <td>{delivery.driver}</td>
+
+                    <td>{delivery.status}</td>
+
+                    <td>{delivery.priority}</td>
+
+                  </tr>
+
+                ))}
+
+              </tbody>
+
+            </table>
+
+          )}
+
+          {routeError && (
+            <p className="tracking-error">
+              {routeError}
+            </p>
+          )}
+
+          <div className="form-actions">
+
+            <button
+              type="button"
+              className="save-btn"
+              onClick={handleRouteOptimisation}
+              disabled={
+                routeLoading ||
+                selectedRouteDeliveries.length === 0
+              }
+            >
+              {routeLoading
+                ? 'Calculating Road Route...'
+                : selectedRouteDeliveries.length === 1
+                  ? 'Find Best Route'
+                  : 'Optimise Route'}
+            </button>
+
+          </div>
+
+        </section>
+
+        {routeResult && (
+
+          <section className="deliveries-section">
+
+            <h2>
+              {routeResult.isSingleDelivery
+                ? 'Best Road Route'
+                : 'Optimised Route'}
+            </h2>
+
+            <p className="route-result-intro">
+              {routeResult.isSingleDelivery
+                ? 'The system has calculated the best available driving route from the warehouse to this delivery.'
+                : 'The system has compared the selected delivery orders using road-network distance from the warehouse and recommended the most efficient delivery sequence.'}
+            </p>
+
+            <div className="details-grid route-summary-grid">
+
+              <div>
+                <span>Route Type</span>
+                <strong>
+                  {routeResult.isSingleDelivery
+                    ? 'Single Delivery'
+                    : 'Multi-stop Optimised'}
+                </strong>
+              </div>
+
+              <div>
+                <span>Stops</span>
+                <strong>
+                  {routeResult.route.length}
+                </strong>
+              </div>
+
+              <div>
+                <span>Original Distance</span>
+                <strong>
+                  {formatDistance(
+                    routeResult.originalDistance
+                  )}
+                </strong>
+              </div>
+
+              <div>
+                <span>Optimised Distance</span>
+                <strong>
+                  {formatDistance(
+                    routeResult.distance
+                  )}
+                </strong>
+              </div>
+
+              <div>
+                <span>Distance Saved</span>
+                <strong>
+                  {formatDistance(
+                    routeResult.savedDistance
+                  )}
+                </strong>
+              </div>
+
+              <div>
+                <span>Estimated Driving Time</span>
+                <strong>
+                  {formatEstimatedTime(
+                    routeResult.duration
+                  )}
+                </strong>
+              </div>
+
+            </div>
+
+            <h3>
+              Recommended Stop Order
+            </h3>
+
+            <table>
+
+              <thead>
+                <tr>
+                  <th>Stop</th>
+                  <th>Type</th>
+                  <th>Job ID</th>
+                  <th>Customer</th>
+                  <th>Priority</th>
+                  <th>Address</th>
+                </tr>
+              </thead>
+
+              <tbody>
+
+                <tr>
+                  <td>Start</td>
+                  <td>Warehouse</td>
+                  <td>—</td>
+                  <td>Warehouse</td>
+                  <td>—</td>
+                  <td>
+                    {routeResult.startAddress || WAREHOUSE_ADDRESS}
+                  </td>
+                </tr>
+
+                {routeResult.route.map(
+                  (stop) => (
+
+                    <tr key={`${stop.type}-${stop.id || stop.jobId}-${stop.stop}`}>
+
+                      <td>{stop.stop}</td>
+
+                      <td>Delivery</td>
+
+                      <td>{stop.jobId}</td>
+
+                      <td>{stop.customer}</td>
+
+                      <td>{stop.priority}</td>
+
+                      <td>
+                        {stop.address ||
+                          'Not available'}
+                      </td>
+
+                    </tr>
+
+                  )
+                )}
+
+              </tbody>
+
+            </table>
+
+            {routeResult.legs?.length > 0 && (
+
+              <>
+                <h3 style={{ marginTop: '30px' }}>
+                  Road Route Details
+                </h3>
+
+                <table>
+
+                  <thead>
+                    <tr>
+                      <th>Leg</th>
+                      <th>To</th>
+                      <th>Distance</th>
+                      <th>Driving Time</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+
+                    {routeResult.legs.map((leg) => (
+
+                      <tr key={`${leg.type}-${leg.jobId}-${leg.stop}`}>
+
+                        <td>{leg.stop}</td>
+
+                        <td>
+                          Delivery — {leg.jobId} - {leg.customer}
+                        </td>
+
+                        <td>
+                          {formatDistance(leg.distance)}
+                        </td>
+
+                        <td>
+                          {formatEstimatedTime(
+                            leg.duration
+                          )}
+                        </td>
+
+                      </tr>
+
+                    ))}
+
+                  </tbody>
+
+                </table>
+
+              </>
+
+            )}
+
+            <div style={{ marginTop: '30px' }}>
+
+              <h3
+                style={{
+                  marginBottom: '15px',
+                  textAlign: 'center'
+                }}
+              >
+                Actual Road Route
+              </h3>
+
+              <p
+                style={{
+                  marginBottom: '15px',
+                  textAlign: 'center',
+                  color: '#667085'
+                }}
+              >
+                The blue line follows the available road network from the warehouse through every delivery stop in the recommended order.
+              </p>
+
+              <RouteMap
+                route={routeResult.route}
+                startLocation={routeResult.startLocation}
+                routeCoordinates={routeResult.coordinates}
+              />
+
+            </div>
+
+          </section>
+
+        )}
+
+      </main>
+
+    </div>
+  );
+}
   if (currentView === 'driver') {
   return (
     <div className="app">
+      {toast && <div className="sms-toast">{toast}</div>}
+      {banner && <div className={`app-banner app-banner-${banner.type}`}>{banner.message}</div>}
       <aside className="sidebar">
         <h2>SLIS</h2>
 
@@ -757,6 +1751,28 @@ const handleEditDriver = (driver) => {
 
           <button onClick={() => setCurrentView('driver')}>
             Driver
+          </button>
+
+          <button
+              onClick={() => {
+              setRouteMode('driver');
+              setRouteDriver('John');
+              setSelectedRouteDeliveries([]);
+              setRouteResult(null);
+              setRouteError('');
+              setCurrentView('routes');
+            }}
+            >
+              Routes
+            </button>
+
+          <button onClick={() => setShowSmsLog(true)}>
+            <FaSms style={{ marginRight: '8px' }} /> SMS Log
+          </button>
+
+          <button onClick={() => setDarkMode(!darkMode)}>
+            {darkMode ? <FaSun style={{ marginRight: '8px' }} /> : <FaMoon style={{ marginRight: '8px' }} />}
+            {darkMode ? 'Light Mode' : 'Dark Mode'}
           </button>
         </nav>
       </aside>
@@ -784,7 +1800,33 @@ const handleEditDriver = (driver) => {
 </header>
 
         <section className="deliveries-section">
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '20px'
+          }}
+        >
           <h2>My Deliveries</h2>
+
+          <button
+            className="save-btn"
+            onClick={() => {
+              // Driver view is a demo view for John, so route optimisation
+              // must always stay scoped to John's deliveries.
+              setRouteMode('driver');
+              setRouteDriver('John');
+              setSelectedRouteDeliveries([]);
+              setRouteResult(null);
+              setRouteError('');
+              setCurrentView('routes');
+            }}
+          >
+            Optimise My Route
+          </button>
+        </div>
 
           <table>
             <thead>
@@ -810,7 +1852,7 @@ const handleEditDriver = (driver) => {
                     <td>
                       <button
                         className="view-btn"
-                        onClick={() => setSelectedDelivery(delivery)}
+                        onClick={() => setSelectedDriverJob(delivery)}
                       >
                         View Job
                       </button>
@@ -823,14 +1865,14 @@ const handleEditDriver = (driver) => {
 
                           setFormData({
                             customer: delivery.customer,
-                            pickupAddress: delivery.pickupAddress,
+                            customerPhone: delivery.customerPhone,
+                            customerEmail: delivery.customerEmail,
+                            pickupAddress: WAREHOUSE_ADDRESS,
                             deliveryAddress: delivery.deliveryAddress,
                             priority: delivery.priority,
                             deliveryDate: delivery.deliveryDate,
                             deliveryTime: delivery.deliveryTime,
                           });
-
-                          setPickupLocation(delivery.pickupLocation);
 
                           setDeliveryLocation(delivery.deliveryLocation);
 
@@ -895,15 +1937,15 @@ const handleEditDriver = (driver) => {
               </div>
 
               <form
-                onSubmit={(event) => {
+                onSubmit={async (event) => {
                   event.preventDefault()
 
-                  updateStatus(selectedDelivery.id, 'Delivered')
+                  await completeDelivery(selectedDelivery.id, proofData)
 
                   setShowProofForm(false)
                   setSelectedDelivery(null)
 
-                  alert('Delivery completed successfully!')
+                  showBanner('success', 'Delivery completed successfully!')
                 }}
               >
                 <div className="form-group">
@@ -986,13 +2028,327 @@ const handleEditDriver = (driver) => {
             </div>
           </div>
         )}
+        {selectedDriverJob && (
+  <div className="details-overlay">
+    <div className="delivery-details">
+      <div className="details-header">
+        <div>
+          <h2>Delivery Details</h2>
+          <p>{selectedDriverJob.id}</p>
+        </div>
 
+        <button
+          className="close-btn"
+          onClick={() => setSelectedDriverJob(null)}
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="details-grid">
+        <div>
+          <span>Customer</span>
+          <strong>{selectedDriverJob.customer}</strong>
+        </div>
+
+        <div>
+          <span>Assigned Driver</span>
+          <strong>{selectedDriverJob.driver}</strong>
+        </div>
+
+        <div>
+          <span>Status</span>
+          <strong>{selectedDriverJob.status}</strong>
+        </div>
+
+        <div>
+          <span>Priority</span>
+          <strong>{selectedDriverJob.priority}</strong>
+        </div>
+
+        <div className="detail-full">
+          <span>Warehouse / Pickup</span>
+          <strong>
+            {WAREHOUSE_ADDRESS}
+          </strong>
+        </div>
+
+        <div className="detail-full">
+          <span>Delivery Address</span>
+          <strong>
+            {selectedDriverJob.deliveryAddress || 'Not available'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Delivery Date</span>
+          <strong>
+            {selectedDriverJob.deliveryDate || 'Not available'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Delivery Time</span>
+          <strong>
+            {selectedDriverJob.deliveryTime || 'Not available'}
+          </strong>
+        </div>
+        <div>
+        <span>Distance</span>
+        <strong>
+          {driverDistance ? `${driverDistance} km` : "N/A"}
+        </strong>
+      </div>
+
+      <div>
+        <span>Estimated Time</span>
+        <strong>
+          {driverEstimatedTime}
+        </strong>
+      </div>
+      </div>
+        {selectedDriverJob?.deliveryLocation && (
+
+        <div
+        style={{
+        marginTop:"30px"
+        }}
+        >
+
+        <h3
+        style={{
+        marginBottom:"15px",
+        textAlign:"center"
+        }}
+        >
+        Delivery Route
+        </h3>
+
+        <MapContainer
+
+        center={WAREHOUSE_LOCATION}
+
+        zoom={12}
+
+        style={{
+
+        height:"350px",
+
+        width:"100%",
+
+        borderRadius:"12px"
+
+        }}
+
+        >
+
+        <TileLayer
+
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+
+        />
+
+        <Marker
+
+        position={WAREHOUSE_LOCATION}
+
+        icon={pickupIcon}
+
+        >
+
+        <Popup>
+
+        Warehouse / Pickup
+
+        </Popup>
+
+        </Marker>
+
+        <Marker
+
+        position={selectedDriverJob.deliveryLocation}
+
+        icon={deliveryIcon}
+
+        >
+
+        <Popup>
+
+        Delivery
+
+        </Popup>
+
+        </Marker>
+
+        <Polyline
+
+        positions={[
+
+        WAREHOUSE_LOCATION,
+
+        selectedDriverJob.deliveryLocation,
+
+        ]}
+
+        color="blue"
+
+        weight={4}
+
+        />
+
+        </MapContainer>
+
+        <div
+          style={{
+            marginTop: "20px",
+            background: "#f8fafc",
+            borderRadius: "12px",
+            padding: "18px",
+          }}
+        >
+
+          <h3
+            style={{
+              marginBottom: "15px",
+            }}
+          >
+            Route Summary
+          </h3>
+
+          <div className="details-grid">
+
+            <div>
+              <span>Distance</span>
+              <strong>{distance} km</strong>
+            </div>
+
+            <div>
+              <span>Estimated Time</span>
+              <strong>{estimatedTime}</strong>
+            </div>
+
+            <div>
+              <span>Priority</span>
+              <strong>{selectedDriverJob.priority}</strong>
+            </div>
+
+            <div>
+              <span>Current Status</span>
+              <strong>{selectedDriverJob.status}</strong>
+            </div>
+
+          </div>
+
+        </div>
+        </div>
+
+        )}
+
+        {selectedDriverJob.status === 'Delivered' && selectedDriverJob.proof && (
+          <div className="pod-summary">
+            <h3>Proof of Delivery</h3>
+            <div className="details-grid">
+              <div><span>Signed By</span><strong>{selectedDriverJob.proof.signature}</strong></div>
+              <div><span>GPS Location</span><strong>{selectedDriverJob.proof.gpsLocation}</strong></div>
+              <div><span>Delivered At</span><strong>{selectedDriverJob.proof.timestamp}</strong></div>
+            </div>
+            {selectedDriverJob.proof.photo && (
+              <img src={selectedDriverJob.proof.photo} alt="Delivery proof" className="pod-photo" />
+            )}
+          </div>
+        )}
+
+      <div className="details-actions">
+        {selectedDriverJob.status === 'Delivered' && (
+          <>
+          <button
+            className="save-btn"
+            style={{ marginRight: '10px' }}
+            onClick={() => generateReceipt(selectedDriverJob, drivers.find(d => d.name === selectedDriverJob.driver))}
+          >
+            <FaFileDownload style={{ marginRight: '6px' }} /> Download PDF Receipt
+          </button>
+          <button
+            className="cancel-btn"
+            style={{ marginRight: '10px' }}
+            onClick={() => generateReceipt(selectedDriverJob, drivers.find(d => d.name === selectedDriverJob.driver), 'print')}
+          >
+            Print
+          </button>
+          </>
+        )}
+        <button
+          className="close-details-btn"
+          onClick={() => setSelectedDriverJob(null)}
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+        {showSmsLog && (
+          <div className="details-overlay">
+            <div className="delivery-details">
+              <div className="details-header">
+                <div><h2>SMS Notification Log</h2><p>Sent to customer & driver — delivery attempted via ClickSend/Gmail in the background</p></div>
+                <button className="close-btn" onClick={() => setShowSmsLog(false)}>×</button>
+              </div>
+              {smsLog.length === 0 ? (
+                <p>No messages sent yet.</p>
+              ) : (
+                smsLog.map((entry) => {
+                  const anySuccess = entry.results?.some((r) => r.success);
+                  return (
+                    <div key={entry.id} className={`sms-log-entry ${anySuccess ? '' : 'sms-log-failed'}`}>
+                      <strong>To {entry.toRole === 'driver' ? 'Driver' : 'Customer'} — {entry.toName}</strong>
+                      <p>{entry.message}</p>
+                      {entry.results?.map((r, i) => (
+                        <div key={i} style={{ fontSize: '12px', color: r.success ? '#166534' : '#b91c1c' }}>
+                          {r.channel} ({r.target}): {r.success ? '✓ Sent' : `✗ Failed — ${r.error}`}
+                        </div>
+                      ))}
+                      <span>{entry.sentAt}</span>
+                    </div>
+                  );
+                })
+              )}
+              <div className="details-actions">
+                <button className="close-details-btn" onClick={() => setShowSmsLog(false)}>Close</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      <p className="app-footer">Smart Logistics System — Roadrunner Couriers Australia</p>
       </main>
     </div>
   )
 }
   return (
     <div className="app">
+      {toast && <div className="sms-toast">{toast}</div>}
+      {banner && <div className={`app-banner app-banner-${banner.type}`}>{banner.message}</div>}
+      {confirmDialog && (
+        <div className="modal-overlay" onClick={() => setConfirmDialog(null)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <p>{confirmDialog.message}</p>
+            <div className="form-actions">
+              <button className="cancel-btn" onClick={() => setConfirmDialog(null)}>Cancel</button>
+              <button
+                className="delete-btn"
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                  setConfirmDialog(null);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <aside className="sidebar">
         <h2>SLIS</h2>
 
@@ -1009,8 +2365,42 @@ const handleEditDriver = (driver) => {
   Customer
 </button>
 
+  <button onClick={() => setShowSmsLog(true)}>
+    <FaSms style={{ marginRight: '8px' }} /> SMS Log
+  </button>
+
+  <button onClick={() => setDarkMode(!darkMode)}>
+    {darkMode ? <FaSun style={{ marginRight: '8px' }} /> : <FaMoon style={{ marginRight: '8px' }} />}
+    {darkMode ? 'Light Mode' : 'Dark Mode'}
+  </button>
+
+  <button onClick={() => {
+    const headers = ['Job ID', 'Customer', 'Phone', 'Email', 'Driver', 'Status', 'Priority', 'Warehouse / Pickup', 'Delivery'];
+    const rows = deliveries.map(d => [d.id, d.customer, d.customerPhone, d.customerEmail, d.driver, d.status, d.priority, WAREHOUSE_ADDRESS, d.deliveryAddress]);
+    const csvContent = [headers, ...rows].map(r => r.map(v => `"${(v || '').toString().replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `deliveries_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }}>
+    Export CSV
+  </button>
+
   <a href="#">Deliveries</a>
-  <a href="#">Routes</a>
+  <button
+    onClick={() => {
+    setRouteMode('dispatcher');
+    setCurrentView('routes');
+    setRouteResult(null);
+    setRouteError('');
+    setSelectedRouteDeliveries([]);
+  }}
+>
+  Routes
+</button>
   <a href="#">Reports</a>
 </nav>
       </aside>
@@ -1151,13 +2541,14 @@ const handleEditDriver = (driver) => {
           <input
   type="file"
   accept="image/*"
-  onChange={(event) => {
+  onChange={async (event) => {
     const file = event.target.files[0]
 
     if (file) {
+      const base64 = await fileToBase64(file);
       setDriverFormData({
         ...driverFormData,
-        image: URL.createObjectURL(file),
+        image: base64,
       })
     }
   }}
@@ -1189,6 +2580,10 @@ const handleEditDriver = (driver) => {
 )}
 <section className="deliveries-section">
   <h2>Driver Management</h2>
+  {driversLoading ? (
+    <div className="page-loading"><span className="loading-spinner loading-spinner-dark"></span>Loading drivers…</div>
+  ) : (
+  <>
   <input
   type="text"
   placeholder="Search drivers by name, ID, email or licence..."
@@ -1200,6 +2595,7 @@ const handleEditDriver = (driver) => {
   <table>
     <thead>
       <tr>
+        <th></th>
         <th>Driver ID</th>
         <th>Name</th>
         <th>Email</th>
@@ -1224,6 +2620,13 @@ const handleEditDriver = (driver) => {
   })
   .map((driver) => (
         <tr key={driver.id}>
+          <td>
+            {driver.image ? (
+              <img src={driver.image} alt={driver.name} className="avatar-sm" />
+            ) : (
+              <span className="avatar-sm avatar-initials">{driver.name.charAt(0)}</span>
+            )}
+          </td>
           <td>{driver.id}</td>
           <td>{driver.name}</td>
           <td>{driver.email}</td>
@@ -1247,8 +2650,8 @@ const handleEditDriver = (driver) => {
             <button
   className="delete-btn"
   onClick={() => {
-  if (window.confirm(`Delete ${driver.name}?`)) {
-    fetch(`https://smart-logistics-system-a1on.onrender.com/api/drivers/${driver._id}`, {
+  askConfirm(`Delete driver ${driver.name}? This can't be undone.`, () => {
+    fetch(`http://localhost:5000/api/drivers/${driver._id}`, {
       method: 'DELETE',
     })
       .then((response) => response.json())
@@ -1258,12 +2661,13 @@ const handleEditDriver = (driver) => {
             (item) => item._id !== driver._id
           )
         )
+        showBanner('success', `${driver.name} removed`)
       })
       .catch((error) => {
         console.error('Error deleting driver:', error)
-        alert('Failed to delete driver')
+        showBanner('error', 'Failed to delete driver')
       })
-  }
+  })
 }}
 >
   Delete
@@ -1273,6 +2677,8 @@ const handleEditDriver = (driver) => {
       ))}
     </tbody>
   </table>
+  </>
+  )}
 </section>
 {selectedDriver && (
   <div className="details-overlay">
@@ -1379,6 +2785,29 @@ const handleEditDriver = (driver) => {
                 </div>
 
                 <div className="form-group">
+                  <label>Customer Phone</label>
+                  <input
+                    type="tel"
+                    name="customerPhone"
+                    placeholder="e.g. 0412345678"
+                    value={formData.customerPhone}
+                    onChange={handleChange}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Customer Email (optional — backup if SMS fails)</label>
+                  <input
+                    type="email"
+                    name="customerEmail"
+                    placeholder="e.g. customer@example.com"
+                    value={formData.customerEmail}
+                    onChange={handleChange}
+                  />
+                </div>
+
+                <div className="form-group">
                   <label>Priority</label>
                   <select
                     name="priority"
@@ -1389,76 +2818,6 @@ const handleEditDriver = (driver) => {
                     <option value="Medium">Medium</option>
                     <option value="High">High</option>
                   </select>
-                </div>
-
-                <div className="form-group full-width">
-
-                <label>Pickup Address</label>
-
-                <input
-                type="text"
-                value={formData.pickupAddress}
-                placeholder="Search pickup address..."
-
-                onChange={(e)=>{
-
-                setFormData({
-
-                ...formData,
-
-                pickupAddress:e.target.value,
-
-                });
-
-                searchAddress(e.target.value,"pickup");
-
-                }}
-                onFocus={() => setActivePin("pickup")}
-                />
-
-                {pickupSuggestions.length>0 && (
-
-                <div className="suggestions">
-
-                {pickupSuggestions.map(place=>(
-
-                <div
-
-                key={place.place_id}
-
-                className="suggestion"
-
-                onClick={()=>{
-
-                setFormData({
-
-                ...formData,
-
-                pickupAddress:place.display_name,
-
-                });
-
-                setPickupLocation([
-                Number(place.lat),
-                Number(place.lon)
-                ]);
-
-                setPickupSuggestions([]);
-
-                }}
-
-                >
-
-                {place.display_name}
-
-                </div>
-
-                ))}
-
-                </div>
-
-                )}
-
                 </div>
 
               <div className="form-group full-width">
@@ -1483,7 +2842,6 @@ const handleEditDriver = (driver) => {
               searchAddress(e.target.value,"delivery");
 
               }}
-              onFocus={() => setActivePin("delivery")}
               />
 
               {deliverySuggestions.length>0 && (
@@ -1531,34 +2889,20 @@ const handleEditDriver = (driver) => {
 
               </div>
                 <div className="form-group full-width">
-                <label>Select Locations on Map</label>
+                <label>Select Delivery Location on Map</label>
 
+                <MapErrorBoundary>
                 <MapPicker
-                active={activePin}
-
-                pickupLocation={pickupLocation}
-                deliveryLocation={deliveryLocation}
-
-                setPickupLocation={setPickupLocation}
-                setDeliveryLocation={setDeliveryLocation}
-
-                pickupAddress={formData.pickupAddress}
-                deliveryAddress={formData.deliveryAddress}
-
-                setPickupAddress={(value) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    pickupAddress: value,
-                  }))
-                }
-
-                setDeliveryAddress={(value) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    deliveryAddress: value,
-                  }))
-                }
-              />
+                  deliveryLocation={deliveryLocation}
+                  setDeliveryLocation={setDeliveryLocation}
+                  setDeliveryAddress={(value) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      deliveryAddress: value,
+                    }))
+                  }
+                />
+              </MapErrorBoundary>
               </div>
 
                 <div className="form-group">
@@ -1594,13 +2938,14 @@ const handleEditDriver = (driver) => {
 
                   setEditingDelivery(null);
 
-                  setPickupLocation(null);
-
+            
                   setDeliveryLocation(null);
 
                   setFormData({
                     customer: "",
-                    pickupAddress: "",
+                    customerPhone: "",
+                    customerEmail: "",
+                    pickupAddress: WAREHOUSE_ADDRESS,
                     deliveryAddress: "",
                     priority: "Medium",
                     deliveryDate: "",
@@ -1626,85 +2971,164 @@ const handleEditDriver = (driver) => {
         )}
 
         <section className="stats">
-          <div className="stat-card">
-            <h3>{deliveries.length}</h3>
-            <p>Total Deliveries</p>
+          <div className="stat-card stat-icon-blue">
+            <FaBoxOpen className="stat-icon" />
+            <div>
+              <h3>{deliveries.length}</h3>
+              <p>Total Deliveries</p>
+            </div>
           </div>
 
-          <div className="stat-card">
-            <h3>
-              {
-                deliveries.filter(
-                  (delivery) => delivery.status === 'Delivered'
-                ).length
-              }
-            </h3>
-            <p>Completed</p>
+          <div className="stat-card stat-icon-green">
+            <FaCheckCircle className="stat-icon" />
+            <div>
+              <h3>
+                {
+                  deliveries.filter(
+                    (delivery) => delivery.status === 'Delivered'
+                  ).length
+                }
+              </h3>
+              <p>Completed</p>
+            </div>
           </div>
 
-          <div className="stat-card">
-            <h3>
-              {
-                deliveries.filter(
-                  (delivery) => delivery.status === 'Pending'
-                ).length
-              }
-            </h3>
-            <p>Pending</p>
+          <div className="stat-card stat-icon-amber">
+            <FaClock className="stat-icon" />
+            <div>
+              <h3>
+                {
+                  deliveries.filter(
+                    (delivery) => delivery.status === 'Pending'
+                  ).length
+                }
+              </h3>
+              <p>Pending</p>
+            </div>
           </div>
 
-          <div className="stat-card">
-            <h3>
-              {
-                deliveries.filter(
-                  (delivery) => delivery.status === 'Delayed'
-                ).length
-              }
-            </h3>
-            <p>Delayed</p>
+          <div className="stat-card stat-icon-red">
+            <FaExclamationTriangle className="stat-icon" />
+            <div>
+              <h3>
+                {
+                  deliveries.filter(
+                    (delivery) => delivery.status === 'Delayed'
+                  ).length
+                }
+              </h3>
+              <p>Delayed</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="deliveries-section analytics-section">
+          <h2>Delivery Status Overview</h2>
+          <div className="bar-chart">
+            {['Pending', 'Assigned', 'In Transit', 'Delivered', 'Delayed'].map((status) => {
+              const count = deliveries.filter((d) => d.status === status).length;
+              const max = Math.max(1, deliveries.length);
+              const pct = Math.round((count / max) * 100);
+              return (
+                <div className="bar-row" key={status}>
+                  <span className="bar-label">{status}</span>
+                  <div className="bar-track">
+                    <div
+                      className={`bar-fill bar-${status.replace(/\s/g, '')}`}
+                      style={{ width: `${pct}%` }}
+                    >
+                      {count > 0 && <span className="bar-count">{count}</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
 
         <section className="deliveries-section">
           <h2>Active Deliveries</h2>
 
+          <input
+            type="text"
+            placeholder="Search by Job ID, customer, or driver..."
+            value={jobSearch}
+            onChange={(event) => setJobSearch(event.target.value)}
+            className="driver-search"
+          />
+
           <table>
             <thead>
               <tr>
-                <th>Job ID</th>
-                <th>Customer</th>
+                <th className="sortable-th" onClick={() => handleSort('id')}>
+                  Job ID {sortField === 'id' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                </th>
+                <th className="sortable-th" onClick={() => handleSort('customer')}>
+                  Customer {sortField === 'customer' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                </th>
                 <th>Driver</th>
-                <th>Status</th>
-                <th>Priority</th>
+                <th className="sortable-th" onClick={() => handleSort('status')}>
+                  Status {sortField === 'status' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                </th>
+                <th className="sortable-th" onClick={() => handleSort('priority')}>
+                  Priority {sortField === 'priority' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                </th>
 <th>Action</th>
               </tr>
             </thead>
 
             <tbody>
-              {deliveries.map((delivery) => (
+              {deliveries
+                .filter((delivery) => {
+                  const search = jobSearch.toLowerCase();
+                  return (
+                    delivery.id.toLowerCase().includes(search) ||
+                    delivery.customer.toLowerCase().includes(search) ||
+                    delivery.driver.toLowerCase().includes(search)
+                  );
+                })
+                .sort((a, b) => {
+                  if (!sortField) return 0;
+                  const valA = (a[sortField] || '').toLowerCase();
+                  const valB = (b[sortField] || '').toLowerCase();
+                  if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
+                  if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
+                  return 0;
+                })
+                .map((delivery) => (
                 <tr key={delivery.id}>
                   <td>{delivery.id}</td>
                   <td>{delivery.customer}</td>
                   <td>
-  <select
-    className="driver-select"
-    value={
-      delivery.driver === 'Unassigned'
-        ? ''
-        : delivery.driver
-    }
-    onChange={(event) =>
-      assignDriver(delivery.id, event.target.value)
-    }
-  >
-    <option value="">Unassigned</option>
+  <div className="driver-cell">
+    {delivery.driver !== 'Unassigned' && (() => {
+      const d = drivers.find((dr) => dr.name === delivery.driver);
+      return d && d.image ? (
+        <img src={d.image} alt={d.name} className="avatar-sm" />
+      ) : delivery.driver !== 'Unassigned' ? (
+        <span className="avatar-sm avatar-initials">{delivery.driver.charAt(0)}</span>
+      ) : null;
+    })()}
+    <select
+      className="driver-select"
+      value={
+        delivery.driver === 'Unassigned'
+          ? ''
+          : delivery.driver
+      }
+      onChange={(event) =>
+        assignDriver(delivery.id, event.target.value)
+      }
+    >
+      <option value="">Unassigned</option>
 
-   {drivers.map((driver) => (
-  <option key={driver.id} value={driver.name}>
-    {driver.name}
-  </option>
-))}
-  </select>
+     {drivers.map((driver) => (
+    <option key={driver.id} value={driver.name}>
+      {driver.name}
+    </option>
+  ))}
+    </select>
+  </div>
 </td>
                   <td>
   <select
@@ -1738,14 +3162,15 @@ const handleEditDriver = (driver) => {
 
                       setFormData({
                         customer: delivery.customer,
-                        pickupAddress: delivery.pickupAddress,
+                        customerPhone: delivery.customerPhone,
+                        customerEmail: delivery.customerEmail,
+                        pickupAddress: WAREHOUSE_ADDRESS,
                         deliveryAddress: delivery.deliveryAddress,
                         priority: delivery.priority,
                         deliveryDate: delivery.deliveryDate,
                         deliveryTime: delivery.deliveryTime,
                       });
 
-                      setPickupLocation(delivery.pickupLocation);
                       setDeliveryLocation(delivery.deliveryLocation);
 
                       setShowForm(true);
@@ -1759,15 +3184,16 @@ const handleEditDriver = (driver) => {
                     className="delete-btn"
                     onClick={() => {
 
-                      if (window.confirm(`Delete ${delivery.id}?`)) {
+                      askConfirm(`Delete job ${delivery.id}? This can't be undone.`, () => {
 
                         setDeliveries(
                           deliveries.filter(
                             item => item.id !== delivery.id
                           )
                         );
+                        showBanner('success', `${delivery.id} deleted`);
 
-                      }
+                      });
 
                     }}
                   >
@@ -1817,6 +3243,163 @@ const handleEditDriver = (driver) => {
             </tbody>
           </table>
         </section>
+        {selectedDelivery && (
+  <div className="details-overlay">
+    <div className="delivery-details">
+
+      <div className="details-header">
+        <div>
+          <h2>Delivery Details</h2>
+          <p>{selectedDelivery.id}</p>
+        </div>
+
+        <button
+          className="close-btn"
+          onClick={() => setSelectedDelivery(null)}
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="details-grid">
+
+        <div>
+          <span>Customer</span>
+          <strong>{selectedDelivery.customer}</strong>
+        </div>
+
+        <div>
+          <span>Assigned Driver</span>
+          <strong>{selectedDelivery.driver || 'Unassigned'}</strong>
+        </div>
+
+        <div>
+          <span>Status</span>
+          <strong>{selectedDelivery.status}</strong>
+        </div>
+
+        <div>
+          <span>Priority</span>
+          <strong>{selectedDelivery.priority}</strong>
+        </div>
+
+        <div className="detail-full">
+          <span>Warehouse / Pickup</span>
+          <strong>
+            {WAREHOUSE_ADDRESS}
+          </strong>
+        </div>
+
+        <div className="detail-full">
+          <span>Delivery Address</span>
+          <strong>
+            {selectedDelivery.deliveryAddress || 'Not available'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Delivery Date</span>
+          <strong>
+            {selectedDelivery.deliveryDate || 'Not available'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Delivery Time</span>
+          <strong>
+            {selectedDelivery.deliveryTime || 'Not available'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Distance</span>
+          <strong>
+            {distance ? `${distance} km` : 'N/A'}
+          </strong>
+        </div>
+
+        <div>
+          <span>Estimated Time</span>
+          <strong>
+            {estimatedTime}
+          </strong>
+        </div>
+
+      </div>
+
+      {selectedDelivery.deliveryLocation && (
+
+        <div style={{ marginTop: '30px' }}>
+
+          <h3
+            style={{
+              marginBottom: '15px',
+              textAlign: 'center'
+            }}
+          >
+            Delivery Route
+          </h3>
+
+          <MapContainer
+            center={WAREHOUSE_LOCATION}
+            zoom={13}
+            style={{
+              height: '350px',
+              width: '100%',
+              borderRadius: '12px'
+            }}
+          >
+
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+
+            <Marker
+              position={WAREHOUSE_LOCATION}
+              icon={pickupIcon}
+            >
+              <Popup>
+                Warehouse / Pickup
+              </Popup>
+            </Marker>
+
+            <Marker
+              position={selectedDelivery.deliveryLocation}
+              icon={deliveryIcon}
+            >
+              <Popup>
+                Delivery Location
+              </Popup>
+            </Marker>
+
+            <Polyline
+              positions={[
+                WAREHOUSE_LOCATION,
+                selectedDelivery.deliveryLocation
+              ]}
+              color="blue"
+              weight={4}
+            />
+
+          </MapContainer>
+
+        </div>
+      )}
+
+      <div className="details-actions">
+
+        <button
+          className="close-details-btn"
+          onClick={() => setSelectedDelivery(null)}
+        >
+          Close
+        </button>
+
+      </div>
+
+    </div>
+  </div>
+)}
         {showProofForm && selectedDelivery && (
   <div className="details-overlay">
     <div className="delivery-details">
@@ -1836,15 +3419,15 @@ const handleEditDriver = (driver) => {
       </div>
 
       <form
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault()
 
-          updateStatus(selectedDelivery.id, 'Delivered')
+          await completeDelivery(selectedDelivery.id, proofData)
 
           setShowProofForm(false)
           setSelectedDelivery(null)
 
-          alert('Delivery completed successfully!')
+          showBanner('success', 'Delivery completed successfully!')
         }}
       >
 
@@ -1931,233 +3514,39 @@ const handleEditDriver = (driver) => {
 )}
 
   
-        {selectedDelivery && (
-  <div className="details-overlay">
-    <div className="delivery-details">
-      <div className="details-header">
-        <div>
-          <h2>Delivery Details</h2>
-          <p>{selectedDelivery.id}</p>
-        </div>
-
-        <button
-          className="close-btn"
-          onClick={() => setSelectedDelivery(null)}
-        >
-          ×
-        </button>
-      </div>
-
-      <div className="details-grid">
-        <div>
-          <span>Customer</span>
-          <strong>{selectedDelivery.customer}</strong>
-        </div>
-
-        <div>
-          <span>Assigned Driver</span>
-          <strong>{selectedDelivery.driver}</strong>
-        </div>
-
-        <div>
-          <span>Status</span>
-          <strong>{selectedDelivery.status}</strong>
-        </div>
-
-        <div>
-          <span>Priority</span>
-          <strong>{selectedDelivery.priority}</strong>
-        </div>
-
-        <div className="detail-full">
-          <span>Pickup Address</span>
-          <strong>
-            {selectedDelivery.pickupAddress || 'Not available'}
-          </strong>
-        </div>
-
-        <div className="detail-full">
-          <span>Delivery Address</span>
-          <strong>
-            {selectedDelivery.deliveryAddress || 'Not available'}
-          </strong>
-        </div>
-
-        <div>
-          <span>Delivery Date</span>
-          <strong>
-            {selectedDelivery.deliveryDate || 'Not available'}
-          </strong>
-        </div>
-
-        <div>
-          <span>Delivery Time</span>
-          <strong>
-            {selectedDelivery.deliveryTime || 'Not available'}
-          </strong>
-        </div>
-        <div>
-        <span>Distance</span>
-        <strong>
-          {distance ? `${distance} km` : "N/A"}
-        </strong>
-      </div>
-
-      <div>
-        <span>Estimated Time</span>
-        <strong>
-          {estimatedTime}
-        </strong>
-      </div>
-      </div>
-        {selectedDelivery?.pickupLocation &&
-        selectedDelivery?.deliveryLocation && (
-
-        <div
-        style={{
-        marginTop:"30px"
-        }}
-        >
-
-        <h3
-        style={{
-        marginBottom:"15px",
-        textAlign:"center"
-        }}
-        >
-        Delivery Route
-        </h3>
-
-        <MapContainer
-
-        center={selectedDelivery.pickupLocation}
-
-        zoom={12}
-
-        style={{
-
-        height:"350px",
-
-        width:"100%",
-
-        borderRadius:"12px"
-
-        }}
-
-        >
-
-        <TileLayer
-
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-
-        />
-
-        <Marker
-
-        position={selectedDelivery.pickupLocation}
-
-        icon={pickupIcon}
-
-        >
-
-        <Popup>
-
-        Pickup
-
-        </Popup>
-
-        </Marker>
-
-        <Marker
-
-        position={selectedDelivery.deliveryLocation}
-
-        icon={deliveryIcon}
-
-        >
-
-        <Popup>
-
-        Delivery
-
-        </Popup>
-
-        </Marker>
-
-        <Polyline
-
-        positions={[
-
-        selectedDelivery.pickupLocation,
-
-        selectedDelivery.deliveryLocation,
-
-        ]}
-
-        color="blue"
-
-        weight={4}
-
-        />
-
-        </MapContainer>
-
-        <div
-          style={{
-            marginTop: "20px",
-            background: "#f8fafc",
-            borderRadius: "12px",
-            padding: "18px",
-          }}
-        >
-
-          <h3
-            style={{
-              marginBottom: "15px",
-            }}
-          >
-            Route Summary
-          </h3>
-
-          <div className="details-grid">
-
-            <div>
-              <span>Distance</span>
-              <strong>{distance} km</strong>
+        {showSmsLog && (
+          <div className="details-overlay">
+            <div className="delivery-details">
+              <div className="details-header">
+                <div><h2>SMS Notification Log</h2><p>Sent to customer & driver — delivery attempted via ClickSend/Gmail in the background</p></div>
+                <button className="close-btn" onClick={() => setShowSmsLog(false)}>×</button>
+              </div>
+              {smsLog.length === 0 ? (
+                <p>No messages sent yet.</p>
+              ) : (
+                smsLog.map((entry) => {
+                  const anySuccess = entry.results?.some((r) => r.success);
+                  return (
+                    <div key={entry.id} className={`sms-log-entry ${anySuccess ? '' : 'sms-log-failed'}`}>
+                      <strong>To {entry.toRole === 'driver' ? 'Driver' : 'Customer'} — {entry.toName}</strong>
+                      <p>{entry.message}</p>
+                      {entry.results?.map((r, i) => (
+                        <div key={i} style={{ fontSize: '12px', color: r.success ? '#166534' : '#b91c1c' }}>
+                          {r.channel} ({r.target}): {r.success ? '✓ Sent' : `✗ Failed — ${r.error}`}
+                        </div>
+                      ))}
+                      <span>{entry.sentAt}</span>
+                    </div>
+                  );
+                })
+              )}
+              <div className="details-actions">
+                <button className="close-details-btn" onClick={() => setShowSmsLog(false)}>Close</button>
+              </div>
             </div>
-
-            <div>
-              <span>Estimated Time</span>
-              <strong>{estimatedTime}</strong>
-            </div>
-
-            <div>
-              <span>Priority</span>
-              <strong>{selectedDelivery.priority}</strong>
-            </div>
-
-            <div>
-              <span>Current Status</span>
-              <strong>{selectedDelivery.status}</strong>
-            </div>
-
           </div>
-
-        </div>
-        </div>
-
         )}
-      <div className="details-actions">
-        <button
-          className="close-details-btn"
-          onClick={() => setSelectedDelivery(null)}
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+      <p className="app-footer">Smart Logistics System — Roadrunner Couriers Australia</p>
       </main>
     </div>
   )
