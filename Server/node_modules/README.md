@@ -1,1 +1,1 @@
-This folder contains entry points for all `core-js` features with dependencies. It's the recommended way for usage only required features.
+This folder contains entry points for [stable ECMAScript features](https://github.com/zloirock/core-js/#ecmascript) with dependencies.
