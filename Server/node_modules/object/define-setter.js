@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/object/define-setter');
+require('../../modules/es.object.define-setter');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Object', '__defineSetter__');

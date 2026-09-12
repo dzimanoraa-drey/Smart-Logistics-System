@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/object/entries');
+require('../../modules/es.object.entries');
+var path = require('../../internals/path');
 
-module.exports = parent;
+module.exports = path.Object.entries;

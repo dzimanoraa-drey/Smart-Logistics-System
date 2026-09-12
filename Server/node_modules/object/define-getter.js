@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/object/define-getter');
+require('../../modules/es.object.define-getter');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Object', '__defineGetter__');

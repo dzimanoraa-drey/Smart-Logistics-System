@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../stable/parse-float');
+require('../modules/es.parse-float');
+var path = require('../internals/path');
 
-module.exports = parent;
+module.exports = path.parseFloat;

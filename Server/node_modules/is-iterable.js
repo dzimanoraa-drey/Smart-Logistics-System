@@ -1,4 +1,6 @@
 'use strict';
-var parent = require('../stable/is-iterable');
+require('../modules/es.array.iterator');
+require('../modules/es.string.iterator');
+var isIterable = require('../internals/is-iterable');
 
-module.exports = parent;
+module.exports = isIterable;

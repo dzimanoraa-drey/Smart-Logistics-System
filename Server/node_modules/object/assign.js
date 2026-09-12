@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/object/assign');
+require('../../modules/es.object.assign');
+var path = require('../../internals/path');
 
-module.exports = parent;
+module.exports = path.Object.assign;

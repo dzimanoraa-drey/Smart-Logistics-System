@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../stable/parse-int');
+require('../modules/es.parse-int');
+var path = require('../internals/path');
 
-module.exports = parent;
+module.exports = path.parseInt;

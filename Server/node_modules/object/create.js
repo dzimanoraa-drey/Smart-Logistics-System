@@ -1,4 +1,9 @@
 'use strict';
-var parent = require('../../stable/object/create');
+require('../../modules/es.object.create');
+var path = require('../../internals/path');
 
-module.exports = parent;
+var Object = path.Object;
+
+module.exports = function create(P, D) {
+  return Object.create(P, D);
+};
