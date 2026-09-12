@@ -1,6 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/to-spliced');
-// TODO: Remove from `core-js@4`
-require('../../modules/esnext.array.to-spliced');
+require('../../modules/es.array.to-spliced');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'toSpliced');

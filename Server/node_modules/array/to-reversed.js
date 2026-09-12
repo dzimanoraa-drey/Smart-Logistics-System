@@ -1,6 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/to-reversed');
-// TODO: Remove from `core-js@4`
-require('../../modules/esnext.array.to-reversed');
+require('../../modules/es.array.to-reversed');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'toReversed');

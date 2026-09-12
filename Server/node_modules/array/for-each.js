@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/for-each');
+require('../../modules/es.array.for-each');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'forEach');

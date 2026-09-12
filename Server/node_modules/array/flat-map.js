@@ -1,4 +1,6 @@
 'use strict';
-var parent = require('../../stable/array/flat-map');
+require('../../modules/es.array.flat-map');
+require('../../modules/es.array.unscopables.flat-map');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'flatMap');

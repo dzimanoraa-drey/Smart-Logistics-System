@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/find-index');
+require('../../modules/es.array.find-index');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'findIndex');

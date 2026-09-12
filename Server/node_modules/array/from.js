@@ -1,4 +1,6 @@
 'use strict';
-var parent = require('../../stable/array/from');
+require('../../modules/es.string.iterator');
+require('../../modules/es.array.from');
+var path = require('../../internals/path');
 
-module.exports = parent;
+module.exports = path.Array.from;

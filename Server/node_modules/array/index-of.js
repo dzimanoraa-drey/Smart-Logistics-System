@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/index-of');
+require('../../modules/es.array.index-of');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'indexOf');

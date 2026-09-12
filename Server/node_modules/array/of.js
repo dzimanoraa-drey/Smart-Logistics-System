@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/of');
+require('../../modules/es.array.of');
+var path = require('../../internals/path');
 
-module.exports = parent;
+module.exports = path.Array.of;

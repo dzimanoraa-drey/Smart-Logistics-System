@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/reduce');
+require('../../modules/es.array.reduce');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'reduce');

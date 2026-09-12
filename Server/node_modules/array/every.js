@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/every');
+require('../../modules/es.array.every');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'every');

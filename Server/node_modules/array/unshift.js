@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/unshift');
+require('../../modules/es.array.unshift');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'unshift');

@@ -1,6 +1,6 @@
 'use strict';
-var parent = require('../../stable/array/to-sorted');
-// TODO: Remove from `core-js@4`
-require('../../modules/esnext.array.to-sorted');
+require('../../modules/es.array.sort');
+require('../../modules/es.array.to-sorted');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'toSorted');

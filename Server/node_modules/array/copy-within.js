@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/copy-within');
+require('../../modules/es.array.copy-within');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'copyWithin');

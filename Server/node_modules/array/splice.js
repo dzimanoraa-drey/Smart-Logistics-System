@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/splice');
+require('../../modules/es.array.splice');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'splice');

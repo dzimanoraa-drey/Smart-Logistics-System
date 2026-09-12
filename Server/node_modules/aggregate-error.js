@@ -1,4 +1,9 @@
 'use strict';
-var parent = require('../stable/aggregate-error');
+require('../modules/es.error.cause');
+require('../modules/es.aggregate-error');
+require('../modules/es.aggregate-error.cause');
+require('../modules/es.array.iterator');
+require('../modules/es.string.iterator');
+var path = require('../internals/path');
 
-module.exports = parent;
+module.exports = path.AggregateError;

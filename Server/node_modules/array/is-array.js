@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/is-array');
+require('../../modules/es.array.is-array');
+var path = require('../../internals/path');
 
-module.exports = parent;
+module.exports = path.Array.isArray;

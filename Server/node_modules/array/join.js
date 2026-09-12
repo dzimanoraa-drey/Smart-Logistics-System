@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../../stable/array/join');
+require('../../modules/es.array.join');
+var entryUnbind = require('../../internals/entry-unbind');
 
-module.exports = parent;
+module.exports = entryUnbind('Array', 'join');
