@@ -1,4 +1,2 @@
 'use strict';
-var parent = require('../stable/btoa');
-
-module.exports = parent;
+module.exports = require('../full/btoa');
