@@ -1,4 +1,5 @@
 'use strict';
-var parent = require('../stable/unescape');
+require('../modules/es.unescape');
+var path = require('../internals/path');
 
-module.exports = parent;
+module.exports = path.unescape;
